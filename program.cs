@@ -1,56 +1,93 @@
 ﻿using System;
 using System.Text;
 using System.Collections.Generic;
+
 using WebSocketSharp;
 using WebSocketSharp.Server;
+
 using SirhurtRConsole.Luau;
-using System.Linq;
+using System.Threading;
 
 class Program
 {
     /*
     
-     -- Connect to the WebSocket server
 local ws = WebSocket.connect("ws://127.0.0.1:8080/sirhurt-func")
 
--- Store functions in getgenv().sirhurt
 getgenv().sirhurt = {}
 
--- Handle incoming messages from the server
-ws.OnMessage:Connect(function(message)
-    print("Received message from server: " .. message)
+local functionsWaitingForReturn = {}
 
-    -- Check if the message is a function registration
+ws.OnMessage:Connect(function(message)
+    --secureinfo("Received message from server: " .. message)
+
     if message:match("register:") then
         local funcName = message:match("register:(.*)")
         
-        -- Register the function in getgenv().sirhurt
         getgenv().sirhurt[funcName] = function(...)
-            -- Send the function call to the server
-            local args = table.concat({...}, ",")
-            ws:Send(funcName .. ":args|" .. args .. "|nil")
+            local formattedArgs = {}
+        
+            for _, v in ipairs({...}) do
+                if type(v) == "string" then
+                    table.insert(formattedArgs, "'" .. v .. "'")
+                else
+                    table.insert(formattedArgs, tostring(v))
+                end
+            end
+        
+            --secureinfo(funcName .. ":args|" .. table.concat(formattedArgs, ",") .. "|nil")
+            ws:Send(funcName .. ":args|" .. table.concat(formattedArgs, ",") .. "|nil")
+
+            functionsWaitingForReturn[funcName] = {isDone = false}
+            repeat task.wait() until functionsWaitingForReturn[funcName].isDone
+            return unpack(functionsWaitingForReturn[funcName].ret)
         end
         
-        print("Registered function: " .. funcName)
+        --secureinfo("Registered function: " .. funcName)
     end
 
-    if message:match(":ret|") then
-        local funcName = message:match("^(.-):ret|")
-        local result = message:match(":ret|'(.-)'")
-        if funcName and result then
-            --print("Result from server for function " .. funcName .. ": " .. result)
+    -- only :ret, is alwways there
+    -- funcname:ret,argsCount|arg1|arg2
+    if message:match(":ret,") then
+        local funcName = message:match("(.+):ret")
+        local argsCount = message:match("ret,(%d+)|")
+        local args = message:match("|(.+)")
+        local argTable = {}
+        
+        -- error:{err} is the first argument if an error happened
+        if #args == 1 and args:match("error:") then
+            error(args:match("error:(.*)"))
         end
+
+        for arg in args:gmatch("[^,]+") do
+            if arg == "nil" then
+                table.insert(argTable, nil)
+            elseif arg == "true" then
+                table.insert(argTable, true)
+            elseif arg == "false" then
+                table.insert(argTable, false)
+            elseif arg:match("^'") and arg:match("'$") then
+                table.insert(argTable, arg:sub(2, -2))
+            elseif tonumber(arg) then
+                table.insert(argTable, tonumber(arg))
+            else
+                error("Invalid argument type: " .. arg)--wont ever trigger
+            end
+        end
+        
+        functionsWaitingForReturn[funcName].ret = argTable
+        functionsWaitingForReturn[funcName].isDone = true
     end
 end)
 
 ws.OnClose:Connect(function()
-    print("WebSocket connection closed.")
+    secureinfo("WebSocket connection closed.")
 end)
 
 ws:Send("get_registered_functions")
 
-wait(1)
-sirhurt.consoleprint("hello from roblox!!")
+task.wait(0.5)
+sirhurt.rconsoledestroy()
      
      */
     static WebSocketServer wssv;
@@ -59,10 +96,15 @@ sirhurt.consoleprint("hello from roblox!!")
     {
         InitConnection(); // allow sirhurt to connect and inherit custom functions
 
-        RegisterLuauFunc("consoleprint", ScriptContext.rconsoleprint);
+        RegisterLuauFunc("rconsolecreate", ScriptContext.rconsolecreate);
+        RegisterLuauFunc("rconsoledestroy", ScriptContext.rconsoledestroy);
         RegisterLuauFunc("rconsoleprint", ScriptContext.rconsoleprint);
+        RegisterLuauFunc("rconsolesettitle", ScriptContext.rconsolesettitle);
+        RegisterLuauFunc("rconsoleclear", ScriptContext.rconsoleclear);
+        RegisterLuauFunc("rconsoleinput", ScriptContext.rconsoleinput);
 
-        Console.ReadLine(); // 
+        // keep console open forever
+        while (true) { } // CPU..
     }
 
     static void InitConnection()
@@ -79,7 +121,7 @@ sirhurt.consoleprint("hello from roblox!!")
 
     public class LuaWebSocketBehavior : WebSocketBehavior
     {
-        public static readonly Dictionary<string, Func<return_state, string>> RegisteredFunctions = new();
+        public static readonly Dictionary<string, Func<return_state, int>> RegisteredFunctions = new();
 
         protected override void OnMessage(MessageEventArgs e)
         {
@@ -94,32 +136,46 @@ sirhurt.consoleprint("hello from roblox!!")
             if (message.Contains(":args|"))
             {
                 return_state funcState = new return_state(message);
-                string ArgRetCount = ProcessFunctionCall(funcState); // result is how many arguments to return
-
-                if (funcState.lua_gettop() == 1 && funcState.lua_iserror(0))
+                try
                 {
-                    // exampleFunc:error:More or less then 1 string argument
-                    Send($"{funcState.FuncName}:{funcState.Arguments[0]}");
-                    return;
-                }
+                    int ArgRetCount = ProcessFunctionCall(funcState); // result is how many arguments to return
 
-                // exampleFunc:ret,2|'sex'|'sex2'
-                Send($"{funcState.FuncName}:ret,{ArgRetCount}|'{string.Join("|", funcState.Return)}'");
+                    if (funcState.lua_gettop() == 1 && funcState.lua_iserror(0))
+                    {
+                        // exampleFunc:error:More or less then 1 string argument
+                        Send($"{funcState.FuncName}:{funcState.Arguments[0]}");
+                        return;
+                    }
+
+                    // exampleFunc:ret,2|'sex'|'sex2'
+                    var statement = (funcState.Return != null && funcState.Return.Length > 0) ? string.Join("|", funcState.Return) : "";
+                    Send($"{funcState.FuncName}:ret,{ArgRetCount}|'{statement}'");
+                }
+                catch (Exception ex)
+                {
+                    Send($"{funcState.FuncName}:ret,{0}|'{ex.Message}'");
+                }
             }
         }
 
-        private string ProcessFunctionCall(return_state state)
+        private int ProcessFunctionCall(return_state state)
         {
             // Check if the function is registered
             if (RegisteredFunctions.TryGetValue(state.FuncName, out var func))
                 return func(state);
-            else return $"Function '{state.FuncName}' not registered.";
+            else state.lua_error($"Function '{state.FuncName}' not registered.");
+            state.lua_error("Function not found.");
+            return 0; // this wont matter but msvc sobs about it
         }
 
         private void SendRegisteredFunctions()
         {
             foreach (var funcName in RegisteredFunctions.Keys)
+            {
+                // sirhurts websockets can lose data
+                Thread.Sleep(1);//this is actualy 64hz..
                 Send($"register:{funcName}");
+            }
         }
     }
 }

@@ -1,4 +1,6 @@
-﻿using System.Text.RegularExpressions;
+﻿using System;
+using System.Reflection;
+using System.Text.RegularExpressions;
 
 namespace SirhurtRConsole.Luau;
 internal class return_state
@@ -41,23 +43,44 @@ public static int rconsoleprint(lua_state state)
     // functions (i might drop this for now..)
     // user data threads ect.. (i might drop this for now..)
 
-    public  bool lua_isstring(int index) => index >= 1 && index <= Arguments.Length && Arguments[index - 1].StartsWith("'") && Arguments[index - 1].EndsWith("'");
-    public  string lua_tostring(int index) => Arguments[index - 1].Trim('\'');
+    public bool lua_isstring(int index) => index >= 1 && index <= Arguments.Length && Arguments[index - 1].StartsWith("'") && Arguments[index - 1].EndsWith("'");
+    public string lua_tostring(int index) => Arguments[index - 1].Trim('\'');
 
-    public  bool lua_isnil(int index) => Arguments[index] == "nil";
+    public bool lua_isnil(int index) => Arguments[index] == "nil";
 
-    public  bool lua_isbool(int index) => (Arguments[index] == "true" || Arguments[index] == "false");
-    public  bool lua_tobool(int index) => Arguments[index] == "true" ? true : false; // lazy solution
+    public bool lua_isbool(int index) => (Arguments[index] == "true" || Arguments[index] == "false");
+    public bool lua_tobool(int index) => Arguments[index] == "true" ? true : false; // lazy solution
 
-    public  bool lua_isnumber(int index) => double.TryParse(Arguments[index], out _);
-    public  double lua_tonumber(int index) => double.Parse(Arguments[index]);
+    public bool lua_isnumber(int index) => double.TryParse(Arguments[index], out _);
+    public double lua_tonumber(int index) => double.Parse(Arguments[index]);
 
     public bool lua_iserror(int index) => Regex.IsMatch(Arguments[index], @"error:\\(.*?\\)");
 
     public int lua_gettop() => Arguments.Length;
-    public int lua_error(string err)
+    public void lua_error(string err) => throw new Exception($"error:{err}");
+
+    // some fancy luau shit that was really helpful
+    public string lua_checkstring(int index)
     {
-        Return = [$"error:{err}"];
-        return 1;
+        if (!lua_isstring(index))
+            lua_error($"Argument {index} must be a string"); // might have to start doing this..
+
+        return lua_tostring(index);
+    }
+
+    public bool lua_checkbool(int index)
+    {
+        if (!lua_isbool(index))
+            lua_error($"Argument {index} must be a boolean");
+
+        return lua_tobool(index);
+    }
+
+    public double lua_checknumber(int index)
+    {
+        if (!lua_isnumber(index))
+            lua_error($"Argument {index} must be a number");
+
+        return lua_tonumber(index);
     }
 }
